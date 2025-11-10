@@ -208,21 +208,37 @@ def efficiency_tips(p: EfficiencyInput):
 
 @app.post("/efficiency/predict")
 def efficiency_predict(payload: EfficiencyInput):
+    # Predict Quality of Sleep (1–10)
     if efficiency_model is None:
         quality = efficiency_fallback(payload)
     else:
         try:
             X = to_efficiency_df(payload)
-            quality = float(efficiency_model.predict(X)[0])  # 1–10
+            quality = float(efficiency_model.predict(X)[0])
         except Exception:
             quality = efficiency_fallback(payload)
 
-    efficiency = float(np.clip(quality * 10.0, 0, 100))      # 0–100
-    level = "High" if efficiency >= 80 else "Moderate" if efficiency >= 60 else "Low"
-    return {
-        "predicted_sleep_quality": round(quality, 2),
-        "efficiency_score": round(efficiency, 1),
-        "level": level,
-        "tips": efficiency_tips(payload),
-    }
+    # Convert to 0–100 efficiency score
+    efficiency = float(np.clip(quality * 10.0, 0, 100))
 
+    # 4-tier mapping
+    if efficiency < 60:
+        grade = "Low"
+        message = "Needs attention—focus on more sleep and lowering stress."
+    elif efficiency < 75:
+        grade = "Moderate"
+        message = "Decent routine—small tweaks can boost your focus."
+    elif efficiency < 90:
+        grade = "High"
+        message = "Great job—keep consistency and micro-breaks."
+    else:
+        grade = "Peak"
+        message = "Outstanding routine—maintain your habits!"
+
+    return {
+        "predicted_sleep_quality": round(quality, 2),  # 1–10
+        "efficiency_score": round(efficiency, 1),      # 0–100
+        "grade": grade,                                 # Low/Moderate/High/Peak
+        "message": message,
+        "tips": efficiency_tips(payload)
+    }
