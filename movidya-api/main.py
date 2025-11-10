@@ -116,11 +116,35 @@ def student_predict(payload: StudentInput):
         return {"error": "student model not loaded"}
     try:
         X = to_student_df(payload)
-        pred = float(student_model.predict(X)[0])  # 0–100 score
-        verdict = "Pass" if pred >= 40 else "Fail"
-        return {"final_score": round(pred, 2), "verdict": verdict}
+        pred = float(student_model.predict(X)[0])
+        score = round(pred, 2)
+
+        # Assign performance level
+        if score < 40:
+            grade = "Fail"
+        elif score < 60:
+            grade = "Pass"
+        elif score < 80:
+            grade = "Good"
+        else:
+            grade = "Excellent"
+
+        # Motivational message
+        messages = {
+            "Fail": "Don't give up — review your study habits and try again! 💪",
+            "Pass": "You passed! Keep improving — small efforts daily count. 🌱",
+            "Good": "Nice work! You’re doing well — stay consistent! 💡",
+            "Excellent": "Outstanding! You’re at the top of your game! 🚀"
+        }
+
+        return {
+            "final_score": score,
+            "grade": grade,
+            "message": messages[grade]
+        }
     except Exception as e:
         return {"error": f"student prediction failed: {e}"}
+
 
 # =========================
 # 2) Study Efficiency (Project 2)
