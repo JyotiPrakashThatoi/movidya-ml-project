@@ -208,7 +208,7 @@ def efficiency_tips(p: EfficiencyInput):
 
 @app.post("/efficiency/predict")
 def efficiency_predict(payload: EfficiencyInput):
-    # Predict Quality of Sleep (1–10)
+    # Predict Quality of Sleep (1–10) internally
     if efficiency_model is None:
         quality = efficiency_fallback(payload)
     else:
@@ -221,24 +221,32 @@ def efficiency_predict(payload: EfficiencyInput):
     # Convert to 0–100 efficiency score
     efficiency = float(np.clip(quality * 10.0, 0, 100))
 
-    # 4-tier mapping
+    # 4-tier mapping focused on efficiency
     if efficiency < 60:
         grade = "Low"
-        message = "Needs attention—focus on more sleep and lowering stress."
+        message = "Needs attention—sleep more consistently and lower stress for better focus."
     elif efficiency < 75:
         grade = "Moderate"
-        message = "Decent routine—small tweaks can boost your focus."
+        message = "Decent routine—small tweaks in rest and movement will boost your study focus."
     elif efficiency < 90:
         grade = "High"
-        message = "Great job—keep consistency and micro-breaks."
+        message = "Great job—your current routine supports strong study sessions."
     else:
         grade = "Peak"
-        message = "Outstanding routine—maintain your habits!"
+        message = "Outstanding—your habits are optimized for deep, focused learning."
 
+    # Efficiency-first response (no explicit sleep metric)
     return {
-        "predicted_sleep_quality": round(quality, 2),  # 1–10
-        "efficiency_score": round(efficiency, 1),      # 0–100
-        "grade": grade,                                 # Low/Moderate/High/Peak
+        "efficiency_score": round(efficiency, 1),   # 0–100
+        "grade": grade,                              # Low/Moderate/High/Peak
         "message": message,
-        "tips": efficiency_tips(payload)
+        "tips": efficiency_tips(payload),            # actionables already phrased as study improvements
+        # Optional: expose drivers if you want, with efficiency language
+        "drivers": {
+            "hours_of_recovery": payload.sleep_duration,   # kept generic
+            "stress_level": payload.stress_level,
+            "activity_index": payload.physical_activity_level,
+            "daily_steps": payload.daily_steps,
+            "resting_heart_rate": payload.heart_rate,
+        }
     }
