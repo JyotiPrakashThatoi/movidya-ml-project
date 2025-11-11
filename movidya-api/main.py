@@ -2,32 +2,51 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from typing import Optional, List, Dict
+from datetime import datetime
+import json
+
+# optional tree export for explanation
+try:
+    from sklearn.tree import export_text
+    SKLEARN_TREE_AVAILABLE = True
+except Exception:
+    SKLEARN_TREE_AVAILABLE = False
 
 # =========================
-# Paths & Settings
+# Paths & Settings (define early)
 # =========================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ART_DIR = os.path.join(BASE_DIR, "artifacts")
-# Detect path for Render environment
+# Detect path for Render environment fallback
 if not os.path.exists(ART_DIR):
     ART_DIR = "/app/movidya-api/artifacts"
 
 STUDENT_MODEL_PATH = os.path.join(ART_DIR, "student_model.joblib")
 EFFICIENCY_MODEL_PATH = os.path.join(ART_DIR, "sleep_efficiency_model.pkl")
 
+# New Project 3 artifact paths
+LEARNING_PROD_MODEL_PATH = os.path.join(ART_DIR, "production_model.joblib")
+LEARNING_EXPLAIN_MODEL_PATH = os.path.join(ART_DIR, "explainable_model.joblib")
+LEARNING_ENCODER_PATH = os.path.join(ART_DIR, "learning_style_label_encoder.joblib")
+
 # =========================
-# App & CORS
+# App & CORS (create app early)
 # =========================
 app = FastAPI(
     title="Movidya API",
-    version="1.0.1",
-    description="Unified API for Movidya projects"
+    version="1.0.2",
+    description="Unified API for Movidya projects (Student perf, Efficiency, Learning Style)",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json"
 )
 
 # For local testing you may add "http://127.0.0.1:10000" temporarily
@@ -42,6 +61,36 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# =========================
+# Feedback logging (now that BASE_DIR & app exist)
+# =========================
+FEEDBACK_LOG = Path(BASE_DIR) / "logs" / "learning_feedback.jsonl"
+FEEDBACK_LOG.parent.mkdir(parents=True, exist_ok=True)
+
+class Feedback(BaseModel):
+    input: dict
+    predicted: str
+    correct: bool
+    corrected_label: Optional[str] = None
+    comment: Optional[str] = None
+
+@app.post("/learning-style/feedback")
+def learning_style_feedback(f: Feedback):
+    entry = {
+        "ts": datetime.utcnow().isoformat(),
+        "input": f.input,
+        "predicted": f.predicted,
+        "correct": f.correct,
+        "corrected_label": f.corrected_label,
+        "comment": f.comment
+    }
+    try:
+        with open(FEEDBACK_LOG, "a", encoding="utf8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        return {"status": "saved"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save feedback: {e}")
 
 # =========================
 # Model Loading Helpers
@@ -60,6 +109,9 @@ def load_joblib(path: str):
 
 student_model = load_joblib(STUDENT_MODEL_PATH)
 efficiency_model = load_joblib(EFFICIENCY_MODEL_PATH)
+learning_production_model = load_joblib(LEARNING_PROD_MODEL_PATH)
+learning_explain_model = load_joblib(LEARNING_EXPLAIN_MODEL_PATH)
+learning_label_encoder = load_joblib(LEARNING_ENCODER_PATH)
 
 # =========================
 # Root & Health
@@ -71,21 +123,28 @@ def root():
         "docs": "/docs",
         "models": {
             "student_loaded": student_model is not None,
-            "efficiency_loaded": efficiency_model is not None
+            "efficiency_loaded": efficiency_model is not None,
+            "learning_production_loaded": learning_production_model is not None,
+            "learning_explainable_loaded": learning_explain_model is not None,
+            "learning_encoder_loaded": learning_label_encoder is not None
         }
     }
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "message": "Movidya API running smoothly"}
+    return {
+        "status": "ok",
+        "message": "Movidya API running smoothly",
+        "models": {
+            "student": student_model is not None,
+            "efficiency": efficiency_model is not None,
+            "learning_production": learning_production_model is not None
+        }
+    }
 
 # =========================
 # 1) Student Performance (Project 1)
 # =========================
-from pydantic import BaseModel, Field
-import pandas as pd
-import numpy as np
-
 class StudentInput(BaseModel):
     Hours_Studied: float = Field(..., ge=0, le=16)
     Attendance_Percentage: float = Field(..., ge=0, le=100)
@@ -148,7 +207,6 @@ def student_predict(payload: StudentInput):
 
 # =========================
 # 2) Study Efficiency (Project 2)
-#    Predicts Quality of Sleep (1–10) → Efficiency Score (0–100)
 # =========================
 class EfficiencyInput(BaseModel):
     gender: str = Field(..., examples=["Male", "Female"])
@@ -250,3 +308,135 @@ def efficiency_predict(payload: EfficiencyInput):
             "resting_heart_rate": payload.heart_rate,
         }
     }
+
+# =========================
+# 3) Learning Style Predictor (Project 3)
+# =========================
+class LearningStyleInput(BaseModel):
+    age: Optional[int] = Field(17, ge=10, le=100)
+    sex: Optional[str] = Field("F", examples=["M", "F"])
+    studytime: Optional[int] = Field(2, ge=1, le=4, description="1= <2h, 2=2-5h, 3=5-10h, 4=10+h")
+    failures: Optional[int] = Field(0, ge=0, le=10)
+    goout: Optional[int] = Field(2, ge=1, le=5)
+    activities: Optional[str] = Field("no", examples=["yes", "no"])
+    health: Optional[int] = Field(3, ge=1, le=5)
+    freetime: Optional[int] = Field(3, ge=1, le=5)
+    absences: Optional[int] = Field(0, ge=0, le=200)
+
+def to_learning_df(p: LearningStyleInput) -> pd.DataFrame:
+    cols = ["age","sex","studytime","failures","goout","activities","health","freetime","absences"]
+    row = {
+        "age": p.age,
+        "sex": p.sex,
+        "studytime": p.studytime,
+        "failures": p.failures,
+        "goout": p.goout,
+        "activities": p.activities,
+        "health": p.health,
+        "freetime": p.freetime,
+        "absences": p.absences
+    }
+    return pd.DataFrame([row], columns=cols)
+
+RECOMMENDATION_MAP = {
+    "Visual": "You learn best with diagrams, charts and visual summaries. Try mind-maps and videos.",
+    "Auditory": "You learn best by listening and discussing. Try audio summaries, group discussions, and recorded lectures.",
+    "Kinesthetic": "You learn by doing. Try hands-on projects, practice tests, and real exercises."
+}
+
+@app.post("/learning-style/predict")
+def learning_style_predict(payload: LearningStyleInput):
+    if learning_production_model is None:
+        raise HTTPException(status_code=503, detail="Learning style production model not loaded.")
+
+    # Convert to DataFrame
+    X = to_learning_df(payload)
+
+    try:
+        # Predict (model pipeline should handle preprocessing)
+        pred_enc = learning_production_model.predict(X)
+        # If label encoder exists, decode to string labels
+        if learning_label_encoder is not None:
+            try:
+                pred_label = learning_label_encoder.inverse_transform(pred_enc)[0]
+            except Exception:
+                # Sometimes model returns strings already
+                pred_label = pred_enc[0] if isinstance(pred_enc, (list, np.ndarray)) else str(pred_enc)
+        else:
+            pred_label = pred_enc[0] if isinstance(pred_enc, (list, np.ndarray)) else str(pred_enc)
+
+        # get probabilities if available
+        probs = None
+        classes = None
+        try:
+            proba = learning_production_model.predict_proba(X)[0]
+            probs = proba.tolist()
+            # attempt to get classes — prefer encoder.classes_ if available
+            if learning_label_encoder is not None:
+                classes = learning_label_encoder.classes_.tolist()
+            else:
+                # fallback to classifier classes if pipeline provides it
+                if hasattr(learning_production_model, "named_steps") and "classifier" in learning_production_model.named_steps:
+                    clf = learning_production_model.named_steps["classifier"]
+                    if hasattr(clf, "classes_"):
+                        classes = clf.classes_.tolist()
+        except Exception:
+            probs = None
+            classes = None
+
+        return {
+            "learning_style": pred_label,
+            "recommendation": RECOMMENDATION_MAP.get(pred_label, ""),
+            "confidence_scores": {"classes": classes, "probs": probs}
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Learning style prediction failed: {e}")
+
+@app.get("/learning-style/explain")
+def learning_style_explain():
+    """
+    Return a simple textual rule explanation from the DecisionTree explainable model, if available.
+    """
+    if learning_explain_model is None:
+        raise HTTPException(status_code=404, detail="Explainable learning model not available.")
+
+    if not SKLEARN_TREE_AVAILABLE:
+        raise HTTPException(status_code=500, detail="sklearn.tree.export_text not available in this environment.")
+
+    try:
+        # Expect explainable model to be a pipeline with a 'classifier' that is a DecisionTreeClassifier
+        if hasattr(learning_explain_model, "named_steps") and "classifier" in learning_explain_model.named_steps:
+            clf = learning_explain_model.named_steps["classifier"]
+            # Attempt to get feature names from preprocessor if possible
+            feature_text = "Decision tree rules unavailable (failed to fetch feature names)."
+            try:
+                # If the pipeline has a preprocessor, try to infer transformed feature names (best-effort)
+                preproc = learning_explain_model.named_steps.get("preprocessor", None)
+                if preproc is not None and hasattr(preproc, "transformers_"):
+                    # Best-effort: collect numeric feature names + onehot categories
+                    feature_names = []
+                    for name, transformer, cols in preproc.transformers_:
+                        if name == "num":
+                            feature_names.extend(cols if isinstance(cols, (list, tuple)) else [cols])
+                        elif name == "cat":
+                            # OneHotEncoder categories are inside transformer[1].named_steps... it's complex;
+                            # fallback to original column names for readability.
+                            feature_names.extend(cols if isinstance(cols, (list, tuple)) else [cols])
+                    feature_text = export_text(clf, feature_names=feature_names)
+                else:
+                    feature_text = export_text(clf)
+            except Exception:
+                try:
+                    feature_text = export_text(clf)
+                except Exception as e:
+                    feature_text = f"Could not export tree: {e}"
+
+            return {"explanation_text": feature_text}
+        else:
+            raise HTTPException(status_code=500, detail="Explainable model pipeline missing classifier step.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate explanation: {e}")
+
+# =========================
+# End of file
+# =========================

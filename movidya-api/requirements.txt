@@ -1,16 +1,9 @@
-# Core dependencies
 fastapi
 uvicorn
-
-# Data science stack
 pandas
 numpy
-scikit-learn
+scikit-learn>=1.2
 joblib
-
-# Validation & typing
-pydantic
-
-# Optional (for debugging/logging)
-python-multipart
-
+xgboost
+matplotlib
+shap
